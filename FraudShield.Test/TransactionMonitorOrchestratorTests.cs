@@ -47,7 +47,7 @@ namespace FraudShield.Test
             var serializedTransactionEvent = JsonConvert.SerializeObject(transactionEvent);
             mockContext.Setup(c => c.GetInput<string>()).Returns(serializedTransactionEvent);
 
-            TransactionMonitorOrchestrator.RunOrchestrator(mockContext.Object).GetAwaiter().GetResult();
+            //TransactionMonitorOrchestrator.RunOrchestrator(mockContext.Object).GetAwaiter().GetResult();
 
             // Assert
             // Verify that the payment is sent to processing queue

@@ -1,8 +1,7 @@
+using FraudShield.DurableEntityState;
 using FraudShield.Models;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
-using Newtonsoft.Json;
-using System;
 using System.Threading.Tasks;
 
 namespace FraudShield
@@ -10,40 +9,34 @@ namespace FraudShield
     public static class TransactionMonitorOrchestrator
     {
         [FunctionName("TransactionMonitorOrchestrator")]
-        public static async Task RunOrchestrator([OrchestrationTrigger] IDurableOrchestrationContext context)
+        public static async Task RunOrchestrator(
+            [OrchestrationTrigger] IDurableOrchestrationContext context,
+            [DurableClient] IDurableEntityClient entityClient,
+            [QueueTrigger("incomingtransactions")] TransactionEvent transactionEvent,
+            [Queue("processingqueue")] IAsyncCollector<TransactionEvent> processingQueue,
+            [Queue("holdingqueue")] IAsyncCollector<TransactionEvent> holdingQueue)
         {
-            var incomingMessage = context.GetInput<string>();
-            var transactionEvent = JsonConvert.DeserializeObject<TransactionEvent>(incomingMessage);
+            var tenantId = transactionEvent.TenantId;
 
-            var tenantSettings = TenantSettingsProvider.GetTenantSettings(transactionEvent.TenantId);
+            //Read tenant settings from duralbe state.
+            var entityId = new EntityId(nameof(TenantSettingsState), tenantId);
+            var stateResponse = await entityClient.ReadEntityStateAsync<TenantSettingsState>(entityId);
+            var tenantSettings = await stateResponse.EntityState?.GetSettingsAsync() ?? TenantSettingsProvider.GetTenantSettings(tenantId);
 
             // Assess the incoming message against the restrictions defined in the Tenant settings
             if (!TransactionValidator.IsTransactionAllowed(transactionEvent, tenantSettings))
             {
                 // Raise an event and send the payment to a holding queue for assessment
-                await context.CallActivityAsync("RaiseEventAndSendToHoldingQueue", transactionEvent);
+                await holdingQueue.AddAsync(transactionEvent);
             }
             else
             {
                 // Send the payment to processing queue if no tenant settings are violated
-                await context.CallActivityAsync("SendToProcessingQueue", transactionEvent);
+                await processingQueue.AddAsync(transactionEvent);
             }
-        }
 
-
-        [FunctionName("RaiseEventAndSendToHoldingQueue")]
-        public static async Task RaiseEventAndSendToHoldingQueue([ActivityTrigger] TransactionEvent transactionEvent)
-        {
-            // Raise an event and send the payment to a holding queue for assessment
-            Console.WriteLine("Transaction violated tenant settings. Sending payment to holding queue.");
-        }
-
-
-        [FunctionName("SendToProcessingQueue")]
-        public static async Task SendToProcessingQueue([ActivityTrigger] TransactionEvent transactionEvent)
-        {
-            // Send the payment to processing queue
-            Console.WriteLine("Transaction passed tenant settings. Sending payment to processing queue.");
+            // Save the updated tenantSettings back to the entity state
+            await entityClient.SignalEntityAsync<ITenantSettingsState>(entityId, proxy => proxy.SetSettingsAsync(tenantSettings));
         }
     }
 }
